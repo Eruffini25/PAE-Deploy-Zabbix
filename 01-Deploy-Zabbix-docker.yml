@@ -1,0 +1,97 @@
+---
+
+- name: Déploiement de Zabbix avec Docker
+  hosts: all
+  become: true
+  vars:
+    zabbix_web_port: 8081
+    zabbix_db_password: zabbix
+    php_timezone: Europe/Paris
+
+  tasks:
+
+    - name: Créer le dossier de configuration Zabbix
+      file:
+        path: /srv/zabbix
+        state: directory
+        mode: '0755'
+        recurse: yes
+
+    - name: Créer le fichier docker-compose.yml
+      copy:
+        dest: /srv/zabbix/docker-compose.yml
+        content: |
+          version: '3.5'
+
+          services:
+            postgres:
+              image: postgres:15
+              environment:
+                POSTGRES_USER: zabbix
+                POSTGRES_PASSWORD: {{ zabbix_db_password }}
+                POSTGRES_DB: zabbix
+              volumes:
+                - pgdata:/var/lib/postgresql/data
+
+            zabbix-server:
+              image: zabbix/zabbix-server-pgsql:latest
+              depends_on:
+                - postgres
+              environment:
+                DB_SERVER_HOST: postgres
+                POSTGRES_USER: zabbix
+                POSTGRES_PASSWORD: {{ zabbix_db_password }}
+              ports:
+                - "10051:10051"
+
+            zabbix-web:
+              image: zabbix/zabbix-web-nginx-pgsql:latest
+              depends_on:
+                - zabbix-server
+              environment:
+                DB_SERVER_HOST: postgres
+                POSTGRES_USER: zabbix
+                POSTGRES_PASSWORD: {{ zabbix_db_password }}
+                ZBX_SERVER_HOST: zabbix-server
+                PHP_TZ: {{ php_timezone }}
+              ports:
+                - "{{ zabbix_web_port }}:8080"
+
+          volumes:
+            pgdata:
+
+    - name: Lancer la stack Zabbix avec Docker Compose v2
+      community.docker.docker_compose_v2:
+        project_src: /srv/zabbix
+        state: present
+
+    - name: Attendre que l'API Zabbix soit disponible
+      uri:
+        url: "http://{{ inventory_hostname }}:{{ zabbix_web_port }}/api_jsonrpc.php"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          {
+            "jsonrpc": "2.0",
+            "method": "apiinfo.version",
+            "params": [],
+            "id": 1,
+            "auth": null
+          }
+        status_code: 200
+        return_content: yes
+      register: zabbix_api_check
+      retries: 10
+      delay: 10
+      until: zabbix_api_check.status == 200
+
+    - name: Afficher les informations d'accès Zabbix
+      debug:
+        msg:
+          - "🌐 Interface Zabbix : http://{{ inventory_hostname }}:{{ zabbix_web_port }}/zabbix"
+          - "📡 API : http://{{ inventory_hostname }}:{{ zabbix_web_port }}/api_jsonrpc.php"
+          - "👤 Login : Admin"
+          - "🔑 Mot de passe : zabbix"
+
